@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ping Server Generator</title>
+</head>
+<body>
+  <form method="post" action="/">
+    <button type="submit">Generate Ping WebServer</button>
+  </form>
+  {% if url %}
+  <h2>URL:</h2>
+  <a href="{{ url }}">{{ url }}</a>
+  {% endif %}
+</body>
+</html>

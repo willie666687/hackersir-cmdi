@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CTF Ping Challenge</title>
+</head>
+<body>
+  <h1>Ping Service</h1>
+  <p class="note">Please enter the host</p>
+
+  <form method="post" action="?password={{ password }}">
+    <input type="text" name="host" placeholder="host or ip" value="{{ host|e }}">
+    <button type="submit">Ping</button>
+  </form>
+
+  {% if result %}
+    <h2>Result</h2>
+    <pre>{{ result }}</pre>
+  {% endif %}
+</body>
+</html>

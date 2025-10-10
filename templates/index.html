@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Ping Server Generator</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 960px; margin: 3rem auto; line-height: 1.5; padding: 0 1rem; }
+      button { padding: 0.6rem 1rem; font-size: 1rem; cursor: pointer; }
+      #text-output {
+        margin-top: 1rem;
+        padding: 1rem;
+        border: 1px solid #ccc;
+        min-height: 4rem;
+        white-space: pre-wrap; /* Allow wrapping of long content */
+        background: #fafafa;
+        word-wrap: break-word; /* Break long words */
+        overflow-wrap: break-word; /* Ensure wrapping works in all browsers */
+        box-sizing: border-box;
+        display: block; /* Ensure block-level behavior */
+      }
+      .status { margin-top: 1.5rem; }
+      .status-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; }
+      .badge { display: inline-block; padding: 0.2rem 0.6rem; background: #444; color: #fff; border-radius: 0.4rem; text-transform: uppercase; font-size: 0.8rem; }
+      .badge.queued { background: #b35c00; }
+      .badge.active { background: #0b7285; }
+      .badge.ended { background: #6c757d; }
+      .info-label { font-weight: 600; }
+      .info-value { font-family: "Roboto Mono", monospace; }
+    </style>
+    <script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
+    <script defer src="static/app.js"></script>
+  </head>
+  <body>
+    <h1>Ping Server Generator</h1>
+    <p>
+      Up to five users can use ping server at a time. If all slots are busy,
+      you will be placed in a queue and notified when it's your turn.
+    </p>
+    <button id="request-btn" type="button">Generate Ping Server</button>
+
+    <section class="status" aria-live="polite">
+      <div class="status-row">
+        <span id="status-label" class="badge ended">disconnected</span>
+        <span id="status-message">Waiting for connection…</span>
+      </div>
+      <div class="status-row"><span class="info-label">Time remaining:</span><span id="timer" class="info-value">—</span></div>
+      <div class="status-row"><span class="info-label">Queue position:</span><span id="queue-position" class="info-value">—</span></div>
+      <div class="status-row"><span class="info-label">Queue token:</span><span id="queue-token" class="info-value">—</span></div>
+      <div class="status-row"><span class="info-label">Estimated wait:</span><span id="queue-wait" class="info-value">—</span></div>
+    </section>
+
+    <section>
+      <h2>Generated Ping Server</h2>
+      <a id="text-output" rel="noopener noreferrer" target="_blank">Press the button to request ping server.</a>
+      <p>Make sure to keep ths site open when using the ping server</p>
+    </section>
+  </body>
+</html>
+</html>
