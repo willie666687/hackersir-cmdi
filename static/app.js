@@ -37,7 +37,7 @@ requestBtn.addEventListener("click", () => {
 });
 
 socket.on("connect", () => {
-  setStatus("active", "Connected. Click the button to request text.");
+  setStatus("active", "Connected. Click the button to request the ping server.");
 });
 
 socket.on("disconnect", () => {
@@ -52,7 +52,7 @@ socket.on("session_update", (payload = {}) => {
   const { status, text, message, timeRemaining, token, source, waitSeconds } = payload;
 
   if (status === "active") {
-    setStatus("active", message || "Text is ready.");
+    setStatus("active", message || "Ping server is ready.");
     if (typeof timeRemaining === "number") {
       timerEl.textContent = `${timeRemaining}s`;
     }
@@ -77,7 +77,7 @@ socket.on("session_update", (payload = {}) => {
     queueTokenEl.textContent = "—";
     updateQueueWait(undefined);
   } else if (status === "connected") {
-    setStatus("active", message || "Connected. Click the button to ask for text.");
+    setStatus("active", message || "Connected. Click the button to ask for the ping server.");
     updateQueueWait(undefined);
   }
 

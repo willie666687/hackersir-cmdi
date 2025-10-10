@@ -282,7 +282,7 @@ def handle_connect():
         "session_update",
         {
             "status": "connected",
-            "message": "Connected. Click the button to request text.",
+            "message": "Connected. Click the button to request the ping server.",
         },
         to=sid,
     )
