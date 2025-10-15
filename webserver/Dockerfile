@@ -13,6 +13,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py /app/
 COPY templates /app/templates
 
+COPY flag.txt /
+
 EXPOSE 80
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "app.py"]
