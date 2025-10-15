@@ -78,15 +78,20 @@ def _ensure_supervisor() -> None:
 def stop_containers():
     global containers
     print("\nStopping all containers...")
-    for container in containers.values():
+    for container in list(containers.values()):
         try:
-            port = int(container.name.split('_')[1])
-            # remove_caddy_route(port)
-            
-            container.stop()
+            # remove_caddy_route(...)  # if applicable
+            container.stop(timeout=1)
             print(f"Stopped container: {container.name}")
-        except Exception as e:
-            print(f"Error stopping container {container.name}: {e}")
+        except docker_errors.NotFound:
+            pass
+        except docker_errors.APIError as e:
+            resp = getattr(e, "response", None)
+            if not (resp is not None and getattr(resp, "status_code", None) == 404):
+                print(f"Error stopping container {getattr(container, 'name', '?')}: {e}")
+        except requests.exceptions.HTTPError as e:
+            if e.response is None or e.response.status_code != 404:
+                print(f"HTTP error stopping container {getattr(container, 'name', '?')}: {e}")
     containers.clear()
     print("All containers stopped.")
 
@@ -101,32 +106,90 @@ def _wait_for_port(host: str, port: int, timeout: float = 8.0, interval: float =
             time.sleep(interval)
     return False
 
+def _wait_for_http(url: str, timeout: float = 15.0, interval: float = 0.3) -> bool:
+    """Wait until an HTTP endpoint responds (any status code)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r = requests.get(url, timeout=1.5)
+            # Any response means the server is accepting connections
+            return True
+        except requests.RequestException:
+            time.sleep(interval)
+    return False
+
+def _find_next_free_port(start: int, end: int) -> int:
+    """Find a free TCP port on localhost in [start, end]."""
+    for p in range(start, end + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("127.0.0.1", p))
+                return p
+            except OSError:
+                continue
+    # Fallback to start if nothing free (shouldn't happen with small pool)
+    return start
+
 def generate_ping_server(user_id: str) -> str:
     global port_now
     secure_password = secrets.token_urlsafe(16)
-    cur_port = port_now
-    container = client.containers.run(
-        IMAGE_NAME,
-        detach=True,
-        ports={'80/tcp': cur_port},
-        name=f"ctf_{cur_port}",
-        environment={"CMDI_PASSWORD": secure_password},
-        auto_remove=True,
-        mem_limit="100m",
-        mem_reservation="75m",
-        # cpu_percent=20  # removed: not a valid docker-py arg here
-    )
+    encoded_password = urllib.parse.quote(secure_password)
+
+    # Pick a free port in the pool
+    cur_port = _find_next_free_port(port_now, 10100)
+
+    def _start_container(port: int):
+        return client.containers.run(
+            IMAGE_NAME,
+            detach=True,
+            ports={'80/tcp': port},
+            name=f"ctf_{port}",
+            environment={"CMDI_PASSWORD": secure_password},
+            auto_remove=True,
+            mem_limit="100m",
+            mem_reservation="75m",
+            # cpu_percent=20  # invalid here
+        )
+
+    container = _start_container(cur_port)
     containers[user_id] = container
 
-    # Wait briefly for the container to start listening to avoid 502 from Caddy
-    _wait_for_port('127.0.0.1', cur_port, timeout=8.0)
+    url_local = f"http://127.0.0.1:{cur_port}/?password={encoded_password}"
 
-    encoded_password = urllib.parse.quote(secure_password)
+    # Wait for TCP and HTTP readiness
+    ready = _wait_for_port('127.0.0.1', cur_port, timeout=10.0) and _wait_for_http(url_local, timeout=12.0)
+    if not ready:
+        # One retry: restart and wait again
+        try:
+            container.restart(timeout=2)
+            ready = _wait_for_port('127.0.0.1', cur_port, timeout=10.0) and _wait_for_http(url_local, timeout=12.0)
+        except Exception:
+            ready = False
+
+    # Verify running state
+    try:
+        container.reload()
+        running = (container.status == "running")
+    except Exception:
+        running = False
+
+    if not (ready and running):
+        # Cleanup and fail
+        try:
+            container.stop(timeout=1)
+        except Exception:
+            pass
+        containers.pop(user_id, None)
+        raise RuntimeError("Container failed to become ready")
+
     full_url = f"{BASE_URL}/cmdi-{cur_port}/?password={encoded_password}"
 
-    port_now += 1
+    # Advance the global pointer (wrap after 10100)
+    port_now = cur_port + 1
     if port_now > 10100:
         port_now = 10000
+
     return full_url
 
 
@@ -137,7 +200,19 @@ def _activate_user(
     from_queue: bool = False,
     queue_token: Optional[str] = None,
 ) -> None:
-    text = generate_ping_server(user_id)
+    try:
+        text = generate_ping_server(user_id)
+    except Exception:
+        socketio.emit(
+            "session_update",
+            {
+                "status": "error",
+                "message": "Failed to start the ping server. Please try again.",
+            },
+            to=sid,
+        )
+        return
+
     now = time.time()
     session = ActiveSession(
         user_id=user_id,
