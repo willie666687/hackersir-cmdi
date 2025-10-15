@@ -30,8 +30,8 @@ BASE_URL = "https://hackersir-cmdi.devvillie.me"
 # Update SocketIO initialization to include the correct CORS origins
 socketio = SocketIO(app, async_mode="eventlet", cors_allowed_origins="*")
 
-MAX_ACTIVE_USERS = 5
-SESSION_DURATION_SECONDS = 60
+MAX_ACTIVE_USERS = 50
+SESSION_DURATION_SECONDS = 900
 CADDY_API_URL = "http://localhost:2019"
 
 global port_now
@@ -110,7 +110,7 @@ def generate_ping_server(user_id: str) -> str:
     full_url = f"{BASE_URL}/cmdi-{port_now}/?password={encoded_password}"
 
     port_now += 1
-    if port_now > 10010:
+    if port_now > 10100:
         port_now = 10000
     return full_url
 
