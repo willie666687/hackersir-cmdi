@@ -17,6 +17,9 @@ import urllib.parse
 import secrets
 import socket
 from docker import errors as docker_errors
+import atexit
+import signal
+import logging
 
 
 
@@ -30,6 +33,9 @@ BASE_URL = "https://hackersir-cmdi.devvillie.me"
 # Update SocketIO initialization to include the correct CORS origins
 socketio = SocketIO(app, async_mode="eventlet", cors_allowed_origins="*")
 
+# Configure basic logging for diagnostics
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
 MAX_ACTIVE_USERS = 50
 SESSION_DURATION_SECONDS = 900
 CADDY_API_URL = "http://localhost:2019"
@@ -37,7 +43,16 @@ CADDY_API_URL = "http://localhost:2019"
 global port_now
 port_now = 10000
 containers = {}
-client = docker.from_env()
+try:
+    client = docker.from_env()
+    # Best-effort connectivity check (won't crash if not available)
+    try:
+        client.ping()
+    except Exception:
+        logging.warning("Docker daemon ping failed; will attempt operations lazily.")
+except Exception:
+    logging.exception("Failed to initialize Docker client from environment.")
+    client = None
 IMAGE_NAME = "ctf-ping-vuln"
 
 
@@ -77,23 +92,24 @@ def _ensure_supervisor() -> None:
 
 def stop_containers():
     global containers
-    print("\nStopping all containers...")
+    logging.info("Stopping all containers...")
     for container in list(containers.values()):
         try:
-            # remove_caddy_route(...)  # if applicable
             container.stop(timeout=1)
-            print(f"Stopped container: {container.name}")
+            logging.info("Stopped container: %s", getattr(container, "name", "?"))
         except docker_errors.NotFound:
             pass
         except docker_errors.APIError as e:
             resp = getattr(e, "response", None)
             if not (resp is not None and getattr(resp, "status_code", None) == 404):
-                print(f"Error stopping container {getattr(container, 'name', '?')}: {e}")
+                logging.exception("Docker API error stopping container %s", getattr(container, 'name', '?'))
         except requests.exceptions.HTTPError as e:
             if e.response is None or e.response.status_code != 404:
-                print(f"HTTP error stopping container {getattr(container, 'name', '?')}: {e}")
+                logging.exception("HTTP error stopping container %s", getattr(container, 'name', '?'))
+        except Exception:
+            logging.exception("Unexpected error while stopping container %s", getattr(container, 'name', '?'))
     containers.clear()
-    print("All containers stopped.")
+    logging.info("All containers stopped.")
 
 def _wait_for_port(host: str, port: int, timeout: float = 8.0, interval: float = 0.2) -> bool:
     """Wait until a TCP port is accepting connections."""
@@ -133,6 +149,10 @@ def _find_next_free_port(start: int, end: int) -> int:
 
 def generate_ping_server(user_id: str) -> str:
     global port_now
+
+    if client is None:
+        raise RuntimeError("Docker is unavailable on the server.")
+
     secure_password = secrets.token_urlsafe(16)
     encoded_password = urllib.parse.quote(secure_password)
 
@@ -149,39 +169,55 @@ def generate_ping_server(user_id: str) -> str:
             auto_remove=True,
             mem_limit="100m",
             mem_reservation="75m",
-            # cpu_percent=20  # invalid here
         )
 
-    container = _start_container(cur_port)
-    containers[user_id] = container
-
-    url_local = f"http://127.0.0.1:{cur_port}/?password={encoded_password}"
-
-    # Wait for TCP and HTTP readiness
-    ready = _wait_for_port('127.0.0.1', cur_port, timeout=10.0) and _wait_for_http(url_local, timeout=12.0)
-    if not ready:
-        # One retry: restart and wait again
-        try:
-            container.restart(timeout=2)
-            ready = _wait_for_port('127.0.0.1', cur_port, timeout=10.0) and _wait_for_http(url_local, timeout=12.0)
-        except Exception:
-            ready = False
-
-    # Verify running state
     try:
-        container.reload()
-        running = (container.status == "running")
-    except Exception:
-        running = False
-
-    if not (ready and running):
-        # Cleanup and fail
         try:
-            container.stop(timeout=1)
+            container = _start_container(cur_port)
+        except docker_errors.ImageNotFound:
+            logging.exception("Docker image not found: %s", IMAGE_NAME)
+            raise RuntimeError("Server image is not available. Please try again later.")
+        except docker_errors.APIError:
+            logging.exception("Docker API error while starting container on port %d", cur_port)
+            raise RuntimeError("Failed to start the server. Please try again later.")
         except Exception:
-            pass
+            logging.exception("Unexpected error while starting container on port %d", cur_port)
+            raise RuntimeError("Failed to start the server. Please try again later.")
+
+        containers[user_id] = container
+        url_local = f"http://127.0.0.1:{cur_port}/?password={encoded_password}"
+
+        # Wait for TCP and HTTP readiness
+        ready = _wait_for_port('127.0.0.1', cur_port, timeout=10.0) and _wait_for_http(url_local, timeout=12.0)
+        if not ready:
+            logging.warning("Container on port %d not ready, attempting one restart...", cur_port)
+            try:
+                container.restart(timeout=2)
+                ready = _wait_for_port('127.0.0.1', cur_port, timeout=10.0) and _wait_for_http(url_local, timeout=12.0)
+            except Exception:
+                logging.exception("Error while restarting container on port %d", cur_port)
+                ready = False
+
+        # Verify running state
+        try:
+            container.reload()
+            running = (container.status == "running")
+        except Exception:
+            logging.exception("Failed to reload container state on port %d", cur_port)
+            running = False
+
+        if not (ready and running):
+            logging.error("Container failed to become ready on port %d", cur_port)
+            try:
+                container.stop(timeout=1)
+            except Exception:
+                logging.exception("Error while stopping unready container on port %d", cur_port)
+            containers.pop(user_id, None)
+            raise RuntimeError("Container failed to become ready. Please try again.")
+    except Exception:
+        # Ensure cleanup if container was created but not tracked
         containers.pop(user_id, None)
-        raise RuntimeError("Container failed to become ready")
+        raise
 
     full_url = f"{BASE_URL}/cmdi-{cur_port}/?password={encoded_password}"
 
@@ -203,6 +239,7 @@ def _activate_user(
     try:
         text = generate_ping_server(user_id)
     except Exception:
+        logging.exception("Failed to start ping server for user_id=%s", user_id)
         socketio.emit(
             "session_update",
             {
@@ -302,10 +339,12 @@ def _session_supervisor() -> None:
                         except docker_errors.APIError as e:
                             resp = getattr(e, "response", None)
                             if not (resp is not None and getattr(resp, "status_code", None) == 404):
-                                raise
+                                logging.exception("Docker API error while stopping expired container for user_id=%s", user_id)
                         except requests.exceptions.HTTPError as e:
                             if e.response is None or e.response.status_code != 404:
-                                raise
+                                logging.exception("HTTP error while stopping expired container for user_id=%s", user_id)
+                        except Exception:
+                            logging.exception("Unexpected error stopping expired container for user_id=%s", user_id)
                         finally:
                             containers.pop(user_id, None)
 
@@ -419,10 +458,12 @@ def handle_disconnect(reason=None):
                     except docker_errors.APIError as e:
                         resp = getattr(e, "response", None)
                         if not (resp is not None and getattr(resp, "status_code", None) == 404):
-                            raise
+                            logging.exception("Docker API error while stopping container on disconnect for user_id=%s", user_id)
                     except requests.exceptions.HTTPError as e:
                         if e.response is None or e.response.status_code != 404:
-                            raise
+                            logging.exception("HTTP error while stopping container on disconnect for user_id=%s", user_id)
+                    except Exception:
+                        logging.exception("Unexpected error stopping container on disconnect for user_id=%s", user_id)
 
         # Remove from queue if present
         removed = _remove_from_queue(user_id)
@@ -517,5 +558,12 @@ def handle_request_text():
 
 
 if __name__ == "__main__":
+    # Ensure cleanup on exit and signals
+    atexit.register(stop_containers)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, lambda s, f: stop_containers())
+        except Exception:
+            logging.debug("Signal handler registration failed for %s", sig)
     _ensure_supervisor()
     socketio.run(app, host="0.0.0.0", port=81)

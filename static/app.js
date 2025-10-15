@@ -24,6 +24,14 @@ function setStatus(state, message) {
   statusMessage.textContent = message || "";
 }
 
+// Surface socket-level errors
+socket.on("connect_error", () => {
+  setStatus("error", "Connection error. Retrying…");
+});
+socket.on("error", () => {
+  setStatus("error", "Server error. Please try again.");
+});
+
 function updateQueueWait(seconds) {
   if (typeof seconds === "number" && Number.isFinite(seconds)) {
     queueWaitEl.textContent = `${seconds}s`;
@@ -78,6 +86,12 @@ socket.on("session_update", (payload = {}) => {
     updateQueueWait(undefined);
   } else if (status === "connected") {
     setStatus("active", message || "Connected. Click the button to ask for the ping server.");
+    updateQueueWait(undefined);
+  } else if (status === "error") {
+    setStatus("error", message || "An unexpected error occurred.");
+    timerEl.textContent = "—";
+    queuePositionEl.textContent = "—";
+    queueTokenEl.textContent = "—";
     updateQueueWait(undefined);
   }
 
