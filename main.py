@@ -160,16 +160,19 @@ def generate_ping_server(user_id: str) -> str:
     cur_port = _find_next_free_port(port_now, 10100)
 
     def _start_container(port: int):
-        return client.containers.run(
-            IMAGE_NAME,
-            detach=True,
-            ports={'80/tcp': port},
-            name=f"ctf_{port}",
-            environment={"CMDI_PASSWORD": secure_password},
-            auto_remove=True,
-            mem_limit="100m",
-            mem_reservation="75m",
-        )
+        if client:
+            return client.containers.run(
+                IMAGE_NAME,
+                detach=True,
+                ports={'80/tcp': port},
+                name=f"ctf_{port}",
+                environment={"CMDI_PASSWORD": secure_password},
+                auto_remove=True,
+                mem_limit="100m",
+                mem_reservation="75m",
+            )
+        else:
+            raise RuntimeError("Client is None")
 
     try:
         try:
