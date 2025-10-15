@@ -11,12 +11,12 @@ from typing import Dict, List, Optional
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO
 
-
-
 import requests
 import docker
 import urllib.parse
 import secrets
+import socket
+from docker import errors as docker_errors
 
 
 
@@ -90,24 +90,39 @@ def stop_containers():
     containers.clear()
     print("All containers stopped.")
 
+def _wait_for_port(host: str, port: int, timeout: float = 8.0, interval: float = 0.2) -> bool:
+    """Wait until a TCP port is accepting connections."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return True
+        except OSError:
+            time.sleep(interval)
+    return False
+
 def generate_ping_server(user_id: str) -> str:
     global port_now
     secure_password = secrets.token_urlsafe(16)
+    cur_port = port_now
     container = client.containers.run(
         IMAGE_NAME,
         detach=True,
-        ports={'80/tcp': port_now},
-        name=f"ctf_{port_now}",
+        ports={'80/tcp': cur_port},
+        name=f"ctf_{cur_port}",
         environment={"CMDI_PASSWORD": secure_password},
         auto_remove=True,
         mem_limit="100m",
         mem_reservation="75m",
-        cpu_percent=20
+        # cpu_percent=20  # removed: not a valid docker-py arg here
     )
     containers[user_id] = container
 
+    # Wait briefly for the container to start listening to avoid 502 from Caddy
+    _wait_for_port('127.0.0.1', cur_port, timeout=8.0)
+
     encoded_password = urllib.parse.quote(secure_password)
-    full_url = f"{BASE_URL}/cmdi-{port_now}/?password={encoded_password}"
+    full_url = f"{BASE_URL}/cmdi-{cur_port}/?password={encoded_password}"
 
     port_now += 1
     if port_now > 10100:
@@ -205,8 +220,19 @@ def _session_supervisor() -> None:
                         to=session.sid,
                     )
                     if user_id in containers:
-                        containers[user_id].stop()
-                        del containers[user_id]
+                        try:
+                            containers[user_id].stop(timeout=1)
+                        except docker_errors.NotFound:
+                            pass
+                        except docker_errors.APIError as e:
+                            resp = getattr(e, "response", None)
+                            if not (resp is not None and getattr(resp, "status_code", None) == 404):
+                                raise
+                        except requests.exceptions.HTTPError as e:
+                            if e.response is None or e.response.status_code != 404:
+                                raise
+                        finally:
+                            containers.pop(user_id, None)
 
             # Promote queued users into open slots
             while waiting_queue and len(active_sessions) < MAX_ACTIVE_USERS:
@@ -289,7 +315,7 @@ def handle_connect():
 
 
 @socketio.on("disconnect")
-def handle_disconnect():
+def handle_disconnect(reason=None):
     sid = _get_sid()
     with _lock:
         user_id = sid_to_user.pop(sid, None)
@@ -309,8 +335,19 @@ def handle_disconnect():
                 to=active.sid,
             )
             if user_id in containers.keys():
-                containers[user_id].stop()
-                del containers[user_id]
+                c = containers.pop(user_id, None)
+                if c:
+                    try:
+                        c.stop(timeout=1)
+                    except docker_errors.NotFound:
+                        pass
+                    except docker_errors.APIError as e:
+                        resp = getattr(e, "response", None)
+                        if not (resp is not None and getattr(resp, "status_code", None) == 404):
+                            raise
+                    except requests.exceptions.HTTPError as e:
+                        if e.response is None or e.response.status_code != 404:
+                            raise
 
         # Remove from queue if present
         removed = _remove_from_queue(user_id)
